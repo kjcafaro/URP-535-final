@@ -1,0 +1,453 @@
+---
+title: "traffic_cams"
+output: html_document
+date: "2025-04-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+#if i might need it, add it
+library(tigris)
+library(ggplot2)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+library(tmap)
+library(sf)
+library(basemaps)
+library(leaflet)
+library(readr)
+library(jsonlite)
+library(glue)
+```
+
+```{r}
+#open and read the json camera file
+#cam_all <- readlines("allCameras.js")
+#head(cam_all)
+js_text <- read_file( "~/Downloads/urp 535 final/traffic_cam_photobooth/allCameras.js")
+
+# Step 2: Remove the JS variable assignment (keep only JSON content)
+# This assumes the first line is "const allCameras = " and the last line ends with ";"
+json_text <- js_text %>%
+  paste(collapse = "\n") %>%
+  gsub("const allCameras = ", "", .) %>%
+  gsub(";$", "", .)
+
+# Step 3: Parse JSON
+camera_data <- fromJSON(json_text)
+camera_data <- camera_data %>% filter(area != "Derry City")
+# Step 4: Preview
+glimpse(camera_data)
+```
+```{r}
+acci <- read.csv("~/Downloads/urp 535 final/Motor_Vehicle_Collisions_-_Crashes_20250419.csv")
+```
+
+
+```{r}
+#accid <- acci %>% filter(!is.na(LONGITUDE), !is.na(LATITUDE))
+#head(acci)
+acci$CRASH.DATE <- as.Date(acci$CRASH.DATE, format = "%m/%d/%Y")
+accid <- acci %>%
+  filter(!is.na(LONGITUDE), !is.na(LATITUDE)) %>%
+  filter(year(CRASH.DATE) == 2024) %>%
+  filter(month(CRASH.DATE)== 05) %>%
+  filter(day(CRASH.DATE)==01)
+accid
+accii <- function(ye, mo, da){
+  filter(!is.na(LONGITUDE), !is.na(LATITUDE)) %>%
+  filter(year(CRASH.DATE) == ye) %>%
+  filter(month(CRASH.DATE)== mo) %>%
+  filter(day(CRASH.DATE)==da)
+}
+```
+
+
+```{r}
+crash <- leaflet(accid) %>%
+  addTiles() %>%
+ # addCircles(lng = ~longitude, lat = ~latitude, radius=200, fillOpacity =0.2) %>%
+  addCircles(lng = ~LONGITUDE, lat = ~LATITUDE, radius = 2, color = 'red')
+
+crash
+```
+
+
+
+```{r}
+traf <- camera_data %>% 
+  st_as_sf(coords = c('longitude', 'latitude'), crs = 4326)
+traf <- traf %>% st_transform(crs = 3857) 
+traf
+#head(traf)
+cam_dist <- st_distance(traf, traf[1,])[1:10]
+#cam_dist
+
+
+nearest <- function(data, point) {
+  dist <- as.numeric(st_distance(data, point))
+  return(min(dist[dist > 0]))
+}
+
+# Calculate nearest neighbor distance for each point using a loop
+nyc_distances <- c()
+for (i in seq(1:nrow(traf))) {
+  # you can simply add items in a vector by creating a new vector with the old values and the new ones
+  nyc_distances <- c(nyc_distances, nearest(traf, traf[i,]))
+}
+
+# calculate average nearest neighbor distance 
+all <- mean(nyc_distances)
+#manhattan <-ca
+
+
+```
+
+
+
+```{r}
+cam_loc <- leaflet(camera_data) %>%
+  addTiles() %>%
+  #radius of camera coverage *from one source that I found* (in reality it is only one direction but it would be too difficult for me to figure out how to properly display that)
+  addCircles(lng = ~longitude, lat = ~latitude, radius=200, fillOpacity =0.2) %>%
+  #camera locations
+  addMarkers(lng = ~longitude, lat = ~latitude, label = ~name, popup = ~paste0(
+      "<strong>", name, "</strong><br>",
+      "Area: ", area, "<br>",
+      "Status: ", isOnline, "<br>",
+      "<img src='", imageUrl, "' width='300px'>"
+    ))
+
+cam_loc
+```
+
+
+
+
+
+```{r}
+bor <- camera_data %>% count(area) %>%
+  ggplot(aes(x = reorder(area, -n), y = n)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Frequency of Traffic Cameras by Borough NYC(2024)",
+       x = "Borough",
+       y = "Number of Cameras") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bor
+```
+```{r}
+#crashes_sf$nearest_cam_dist <- sapply(1:nrow(crashes_sf), function(i) {nearest(crashes_sf[i, ], traf)})
+
+accid_sf <- accid %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326) %>%
+  st_transform(crs = 3857)
+
+traf <- camera_data %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 3857)
+
+# STEP 2: Function to find nearest distance from crash to any camera
+nearest_distance <- function(point, camera_data) {
+  min(as.numeric(st_distance(point, camera_data)))
+}
+
+# STEP 3: Add nearest distance to each crash point
+accid_sf$nearest_cam_dist_m <- sapply(1:nrow(accid_sf), function(i) {
+  nearest_distance(accid_sf[i, ], traf)
+})
+accid_sf$nearest_cam_dist_m
+
+accid$nearest_cam_dist_m <-sapply(1:nrow(accid), function(i) {
+  nearest_distance(accid[i, ], traf)
+})
+```
+
+```{r}
+#car emoji for the crash locations
+crash_icon <- makeIcon(
+  iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSZsr4yn6A7l0vig3aohI1GXmkHUPz3plpmRA&s",  
+  iconWidth = 24, iconHeight = 24)
+
+combined_map <- leaflet() %>%
+  addTiles() %>%
+  
+
+  addMarkers(data = accid, 
+             lng = ~LONGITUDE, 
+             lat = ~LATITUDE, 
+             icon = crash_icon,
+             group = "Crashes") %>%
+  
+  # 200 m radius around camera locations 
+  addCircles(data = camera_data, 
+             lng = ~longitude, lat = ~latitude, 
+             radius = 200, fillOpacity = 0.2, color = 'blue', group = "Cameras") %>%
+  #camera locations
+  addMarkers(data = camera_data,
+             lng = ~longitude, lat = ~latitude,
+             label = ~name,
+             popup = ~paste0(
+               "<strong>", name, "</strong><br>",
+               "Area: ", area, "<br>",
+               "Status: ", isOnline, "<br>",
+               "<img src='", imageUrl, "' width='300px'>"
+             ), group = "Cameras") %>%
+
+
+  addLayersControl(
+    overlayGroups = c("Crashes", "Cameras"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+combined_map <- combined_map %>%
+  addLegend(position = "bottomright",
+            colors = c("red", "blue"),
+            labels = c("Crash Location", "Public Camera Coverage"),
+            title = "Map Legend",
+            opacity = 0.8) %>%
+   addControl("<h3 style='color: black; text-align: center;'>NYC Traffic Crashes & Surveillance Cameras (2024)</h3>", position = "topleft")
+combined_map
+```
+
+```{r}
+acci_24 <- acci %>%
+  filter(!is.na(LONGITUDE), !is.na(LATITUDE)) %>%
+  filter(year(CRASH.DATE) == 2024) %>%
+  filter(nchar(BOROUGH)>2)
+
+gra <- acci_24 %>% count(BOROUGH) %>%
+  ggplot(aes(x = reorder(BOROUGH, -n), y = n)) +
+  geom_bar(stat = "identity", fill = "pink") +
+  labs(title = "Frequency of Car Accidents by Borough NYC (2024)",
+       x = "Borough",
+       y = "Car Accidents") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+gra
+```
+```{r}
+count_crashes_in_coverage <- function(crashes_df, cameras_df, radius_m = 200) {
+  # Convert crashes and cameras to sf points
+  crashes_sf <- st_as_sf(crashes_df, coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
+  cameras_sf <- st_as_sf(cameras_df, coords = c("longitude", "latitude"), crs = 4326)
+
+  # Reproject to meters (so radius makes sense)
+  crashes_sf <- st_transform(crashes_sf, 32618)  # UTM Zone 18N covers NYC
+  cameras_sf <- st_transform(cameras_sf, 32618)
+
+  # Create buffer zones around cameras
+  camera_buffers <- st_buffer(cameras_sf, dist = radius_m)
+
+  # Find crashes within any camera buffer
+  within_coverage <- st_join(crashes_sf, camera_buffers, join = st_within)
+
+  # Filter to only matched (i.e., within some buffer)
+  covered_crashes <- within_coverage[!is.na(within_coverage$name), ]
+
+  # Return results
+  list(
+    count = nrow(covered_crashes),
+    total = nrow(crashes_df),
+    covered_crashes = covered_crashes
+  )
+}
+
+count_crashes_in_coverage(acci_24, camera_data)
+coverage_results <- count_crashes_in_coverage(acci_24, camera_data)
+```
+
+
+```{r}
+#cat("Crashes potentially within camera coverage:", coverage_results$count, "/", coverage_results$total, "\n")
+aa <- glue("Crashes Potentially within Camera Coverage: {(coverage_results$count / coverage_results$total)*100} %")
+aa
+```
+
+```{r}
+#crashes_sf$nearest_cam_dist <- sapply(1:nrow(crashes_sf), function(i) {nearest(crashes_sf[i, ], traf)})
+
+accid_sf <- accid %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326) %>%
+  st_transform(crs = 3857)
+
+traf <- camera_data %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 3857)
+
+# STEP 2: Function to find nearest distance from crash to any camera
+nearest_distance <- function(point, camera_data) {
+  min(as.numeric(st_distance(point, camera_data)))
+}
+
+# STEP 3: Add nearest distance to each crash point
+accid_sf$nearest_cam_dist_m <- sapply(1:nrow(accid_sf), function(i) {
+  nearest_distance(accid_sf[i, ], traf)
+})
+```
+
+
+```{r}
+accid_coords <- accid_sf %>%
+  mutate(LONGITUDE = st_coordinates(.)[,1],
+         LATITUDE = st_coordinates(.)[,2]) %>%
+  st_drop_geometry()
+
+# Build the map
+combined_map2 <- leaflet() %>%
+  addTiles() %>%
+
+  # Crash markers
+  addMarkers(data = accid_coords, 
+             lng = ~LONGITUDE, 
+             lat = ~LATITUDE, 
+             icon = crash_icon,
+             popup = ~glue("Distance to Nearest Camera: {round(nearest_cam_dist_m, 1)} meters"),
+             group = "Crashes") %>%
+  
+  # Camera coverage circles
+  addCircles(data = camera_data, 
+             lng = ~longitude, lat = ~latitude, 
+             radius = 200, fillOpacity = 0.2, color = 'blue', group = "Cameras") %>%
+
+  # Camera markers
+  addMarkers(data = camera_data,
+             lng = ~longitude, lat = ~latitude,
+             label = ~name,
+             popup = ~paste0(
+               "<strong>", name, "</strong><br>",
+               "Area: ", area, "<br>",
+               "Status: ", isOnline, "<br>",
+               "<img src='", imageUrl, "' width='300px'>"
+             ), group = "Cameras") %>%
+
+  # Layer control
+  addLayersControl(
+    overlayGroups = c("Crashes", "Cameras"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+
+  # Legend
+  addLegend(position = "bottomright",
+            colors = c("red", "blue"),
+            labels = c("Crash Location", "Camera Coverage"),
+            title = "Map Legend",
+            opacity = 0.8) %>%
+
+  # Title control
+  addControl("<h3 style='color: black; text-align: center;'>NYC Traffic Crashes & Surveillance Cameras (2024)</h3>",
+             position = "topleft")
+
+# Show map
+combined_map2
+```
+
+```{r}
+#careful this file is giant
+pano <- read_csv("~/Downloads/decode-surveillance-nyc-1.1.0/data/panorama_url.csv")
+head(pano)
+```
+
+```{r}
+inte <- read_csv("~/Downloads/decode-surveillance-nyc-1.1.0/data/counts_per_intersections.csv")
+#nrow(inte)
+#head(inte)
+inter <- inte %>% filter(n_cameras_median >= 2) %>% 
+  filter(!is.na(Lat) & (!is.na(Long))) %>%
+  filter(BoroName == 'Manhattan' | BoroName == 'Brooklyn')
+ 
+#head(inter)
+nrow(inter)
+```
+
+```{r}
+all_cam <-  leaflet(inter) %>%
+  addTiles() %>%
+  #radius of camera coverage *from one source that I found* (in reality it is only one direction but it would be too difficult for me to figure out how to properly display that)
+  addCircles(lng = ~Long, lat = ~Lat, radius=10, fillOpacity =0.8, color = 'purple',popup = ~paste0(
+      "# of Cameras at Intersection : ", n_cameras_median, "<br>",
+      "<img src='", URL, "' width='300px'>" ) )
+  #camera locations
+  #addMarkers(lng = ~longitude, lat = ~latitude, label = ~name, popup = ~paste0(
+      #"<strong>", name, "</strong><br>",
+     # "Area: ", area, "<br>",
+    #  "Status: ", isOnline, "<br>",
+     # "<img src='", imageUrl, "' width='300px'>"
+    
+
+all_cam
+```
+```{r}
+#car emoji for the crash locations
+crash_icon <- makeIcon(
+  iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSZsr4yn6A7l0vig3aohI1GXmkHUPz3plpmRA&s",  
+  iconWidth = 24, iconHeight = 24)
+
+combined_map <- leaflet() %>%
+  addTiles() %>%
+
+  addMarkers(data = accid, 
+             lng = ~LONGITUDE, 
+             lat = ~LATITUDE, 
+             icon = crash_icon,
+             group = "Crashes") %>%
+  
+   addCircles(data = inter, lng = ~Long, lat = ~Lat, radius=150, fillOpacity = inter$n_cameras_median / 10,
+    color = 'purple', group = 'All Public Surveillance Cameras', popup = ~paste0(
+      "# of Cameras at Intersection : ", n_cameras_median, "<br>",
+      "<img src='", URL, "' width='300px'>" )) %>%
+  
+  # 200 m radius around camera locations 
+  addCircles(data = camera_data, 
+             lng = ~longitude, lat = ~latitude, 
+             radius = 200, fillOpacity = 0.2, color = 'blue', group = "Traffic Cameras") %>%
+  #traffic camera locations
+  addMarkers(data = camera_data,
+             lng = ~longitude, lat = ~latitude,
+             label = ~name,
+             popup = ~paste0(
+               "<strong>", name, "</strong><br>",
+               "Area: ", area, "<br>",
+               "Status: ", isOnline, "<br>",
+               "<img src='", imageUrl, "' width='300px'>"
+             ), group = "Traffic Cameras") %>%
+
+
+  addLayersControl(
+    overlayGroups = c("All Public Surveillance Cameras", "Crashes", "Traffic Cameras"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+combined_map <- combined_map %>%
+  addLegend(position = "bottomright",
+            colors = c("purple", "red", "blue"),
+            labels = c("Surveillance ", "Crash Location", "Traffic Camera Coverage"),
+            title = "Map Legend",
+            opacity = 0.8) %>%
+   addControl("<h3 style='color: black; text-align: center;'>NYC Traffic Crashes & Surveillance Cameras </h3>", position = "topleft")
+combined_map
+```
+
